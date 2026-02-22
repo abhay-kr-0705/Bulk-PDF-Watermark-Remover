@@ -13,11 +13,12 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Bulk PDF Watermark Manager")
-        self.geometry("900x800")
+        self.geometry("1400x850") # Wider geometry for split screen
         
-        # Configure layout
+        # Configure layout: 2 columns
         self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1, minsize=500) # Settings Pane
+        self.grid_columnconfigure(1, weight=1, minsize=500) # Preview Pane
 
         self.input_dir = ""
         self.output_dir = ""
@@ -26,13 +27,20 @@ class App(ctk.CTk):
         
         self.processor = None
         self.processing_thread = None
+        
+        # Preview debounce timer
+        self.preview_timer = None
 
         self.create_widgets()
+        # Initialize an empty preview
+        self.trigger_preview_update()
 
     def create_widgets(self):
-        # We'll use a scrollable frame since we have many options now
+        # ==========================================
+        # LEFT PANE: SETTINGS
+        # ==========================================
         self.scroll_frame = ctk.CTkScrollableFrame(self)
-        self.scroll_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self.scroll_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
         self.scroll_frame.grid_columnconfigure(1, weight=1)
 
         # --- Section 1: Directories ---
@@ -49,7 +57,7 @@ class App(ctk.CTk):
         self.output_label.grid(row=2, column=1, padx=10, pady=5, sticky="w")
 
         # --- Section 2: Watermark Removal ---
-        ctk.CTkLabel(self.scroll_frame, text="2. Remove Existing Watermark Logo (Optional)", font=ctk.CTkFont(size=18, weight="bold")).grid(row=3, column=0, padx=10, pady=(20, 5), sticky="w", columnspan=2)
+        ctk.CTkLabel(self.scroll_frame, text="2. Remove Existing Watermark Logo", font=ctk.CTkFont(size=18, weight="bold")).grid(row=3, column=0, padx=10, pady=(20, 5), sticky="w", columnspan=2)
 
         self.image_btn = ctk.CTkButton(self.scroll_frame, text="Select Target Image to Remove", command=self.select_target_image)
         self.image_btn.grid(row=4, column=0, padx=10, pady=5, sticky="w")
@@ -62,7 +70,7 @@ class App(ctk.CTk):
         # Type Dropdown
         ctk.CTkLabel(self.scroll_frame, text="Watermark Type:").grid(row=6, column=0, padx=10, pady=5, sticky="e")
         self.wm_type_var = ctk.StringVar(value="Text")
-        self.wm_type_menu = ctk.CTkOptionMenu(self.scroll_frame, values=["Text", "Image"], variable=self.wm_type_var, command=self.toggle_wm_type)
+        self.wm_type_menu = ctk.CTkOptionMenu(self.scroll_frame, values=["Text", "Image"], variable=self.wm_type_var, command=self.handle_type_change)
         self.wm_type_menu.grid(row=6, column=1, padx=10, pady=5, sticky="w")
 
         # Text input
@@ -70,6 +78,7 @@ class App(ctk.CTk):
         self.lbl_wm_text.grid(row=7, column=0, padx=10, pady=5, sticky="e")
         self.wm_text_entry = ctk.CTkEntry(self.scroll_frame, placeholder_text="e.g., CONFIDENTIAL")
         self.wm_text_entry.grid(row=7, column=1, padx=10, pady=5, sticky="ew")
+        self.wm_text_entry.bind("<KeyRelease>", self.trigger_preview_update)
 
         # Image input
         self.btn_wm_image = ctk.CTkButton(self.scroll_frame, text="Select Watermark Image", command=self.select_wm_image)
@@ -78,7 +87,7 @@ class App(ctk.CTk):
         # Common Parameters:
         # Opacity
         ctk.CTkLabel(self.scroll_frame, text="Opacity (0.1 to 1.0):").grid(row=9, column=0, padx=10, pady=5, sticky="e")
-        self.opacity_slider = ctk.CTkSlider(self.scroll_frame, from_=0.1, to=1.0, number_of_steps=9)
+        self.opacity_slider = ctk.CTkSlider(self.scroll_frame, from_=0.1, to=1.0, number_of_steps=9, command=self.trigger_preview_update)
         self.opacity_slider.set(0.3)
         self.opacity_slider.grid(row=9, column=1, padx=10, pady=5, sticky="ew")
 
@@ -88,6 +97,7 @@ class App(ctk.CTk):
         self.size_entry = ctk.CTkEntry(self.scroll_frame, placeholder_text="e.g., 50")
         self.size_entry.insert(0, "50")
         self.size_entry.grid(row=10, column=1, padx=10, pady=5, sticky="ew")
+        self.size_entry.bind("<KeyRelease>", self.trigger_preview_update)
 
         # Angle (Text Only)
         self.lbl_angle = ctk.CTkLabel(self.scroll_frame, text="Rotation Angle (Degrees):")
@@ -95,11 +105,12 @@ class App(ctk.CTk):
         self.angle_entry = ctk.CTkEntry(self.scroll_frame, placeholder_text="e.g., 30")
         self.angle_entry.insert(0, "30")
         self.angle_entry.grid(row=11, column=1, padx=10, pady=5, sticky="ew")
+        self.angle_entry.bind("<KeyRelease>", self.trigger_preview_update)
 
         # Position
         ctk.CTkLabel(self.scroll_frame, text="Position:").grid(row=12, column=0, padx=10, pady=5, sticky="e")
         self.pos_var = ctk.StringVar(value="Center")
-        self.pos_menu = ctk.CTkOptionMenu(self.scroll_frame, values=["Center", "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"], variable=self.pos_var)
+        self.pos_menu = ctk.CTkOptionMenu(self.scroll_frame, values=["Center", "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"], variable=self.pos_var, command=self.trigger_preview_update)
         self.pos_menu.grid(row=12, column=1, padx=10, pady=5, sticky="w")
 
         # --- Section 4: Add Custom Footer Link ---
@@ -112,31 +123,43 @@ class App(ctk.CTk):
         ctk.CTkLabel(self.scroll_frame, text="Footer Display Text:").grid(row=15, column=0, padx=10, pady=5, sticky="e")
         self.link_text_entry = ctk.CTkEntry(self.scroll_frame, placeholder_text="e.g., Visit Our Website")
         self.link_text_entry.grid(row=15, column=1, padx=10, pady=5, sticky="ew")
+        self.link_text_entry.bind("<KeyRelease>", self.trigger_preview_update)
 
         ctk.CTkLabel(self.scroll_frame, text="Link Position:").grid(row=16, column=0, padx=10, pady=5, sticky="e")
         self.link_pos_var = ctk.StringVar(value="Bottom-Center")
-        self.link_pos_menu = ctk.CTkOptionMenu(self.scroll_frame, values=["Bottom-Center", "Bottom-Left", "Bottom-Right", "Top-Center", "Top-Left", "Top-Right"], variable=self.link_pos_var)
+        self.link_pos_menu = ctk.CTkOptionMenu(self.scroll_frame, values=["Bottom-Center", "Bottom-Left", "Bottom-Right", "Top-Center", "Top-Left", "Top-Right"], variable=self.link_pos_var, command=self.trigger_preview_update)
         self.link_pos_menu.grid(row=16, column=1, padx=10, pady=5, sticky="w")
 
         # --- Section 5: Execution ---
-        exec_frame = ctk.CTkFrame(self)
-        exec_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-        exec_frame.grid_columnconfigure((0, 1), weight=1)
-
-        self.preview_btn = ctk.CTkButton(exec_frame, text="Show Preview", command=self.preview_settings, font=ctk.CTkFont(size=14, weight="bold"), height=40, fg_color="#F2A900", hover_color="#C08400", text_color="black")
-        self.preview_btn.grid(row=0, column=0, padx=20, pady=(15, 5), sticky="ew")
+        exec_frame = ctk.CTkFrame(self.scroll_frame)
+        exec_frame.grid(row=17, column=0, columnspan=2, padx=10, pady=(30, 10), sticky="nsew")
+        exec_frame.grid_columnconfigure(0, weight=1)
 
         self.start_btn = ctk.CTkButton(exec_frame, text="Start Processing", command=self.start_processing, font=ctk.CTkFont(size=16, weight="bold"), height=50)
-        self.start_btn.grid(row=0, column=1, padx=20, pady=(15, 5), sticky="ew")
+        self.start_btn.grid(row=0, column=0, padx=20, pady=(15, 5), sticky="ew")
 
         self.progress_bar = ctk.CTkProgressBar(exec_frame)
-        self.progress_bar.grid(row=1, column=0, columnspan=2, padx=20, pady=5, sticky="ew")
+        self.progress_bar.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
         self.progress_bar.set(0)
 
         self.status_label = ctk.CTkLabel(exec_frame, text="Ready", text_color="gray")
-        self.status_label.grid(row=2, column=0, columnspan=2, padx=20, pady=(0, 10))
+        self.status_label.grid(row=2, column=0, padx=20, pady=(0, 10))
 
-    def toggle_wm_type(self, value):
+        # ==========================================
+        # RIGHT PANE: LIVE PREVIEW
+        # ==========================================
+        self.preview_frame = ctk.CTkFrame(self)
+        self.preview_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
+        self.preview_frame.grid_rowconfigure(1, weight=1)
+        self.preview_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(self.preview_frame, text="Live Preview", font=ctk.CTkFont(size=18, weight="bold")).grid(row=0, column=0, pady=10)
+        
+        self.preview_canvas = ctk.CTkLabel(self.preview_frame, text="Wait for preview...", text_color="gray")
+        self.preview_canvas.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+
+
+    def handle_type_change(self, value):
         if value == "Text":
             self.btn_wm_image.grid_forget()
             self.lbl_wm_image.grid_forget()
@@ -151,12 +174,14 @@ class App(ctk.CTk):
             self.angle_entry.grid_forget()
             self.btn_wm_image.grid(row=8, column=0, padx=10, pady=5, sticky="e")
             self.lbl_wm_image.grid(row=8, column=1, padx=10, pady=5, sticky="w")
+        self.trigger_preview_update()
 
     def select_input_dir(self):
         folder = filedialog.askdirectory()
         if folder:
             self.input_dir = folder
             self.input_label.configure(text=folder, text_color="white")
+            self.trigger_preview_update()
 
     def select_output_dir(self):
         folder = filedialog.askdirectory()
@@ -169,35 +194,23 @@ class App(ctk.CTk):
         if file:
             self.target_image_path = file
             self.image_label.configure(text=os.path.basename(file), text_color="white")
+            self.trigger_preview_update()
 
     def select_wm_image(self):
         file = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp")])
         if file:
             self.custom_watermark_image_path = file
             self.lbl_wm_image.configure(text=os.path.basename(file), text_color="white")
-
-    def handle_progress_update(self, data):
-        if data["type"] == "init":
-            self.after(0, lambda: self.status_label.configure(text=f"Found {data['total']} PDFs. Preparing..."))
-        elif data["type"] == "progress":
-            progress_ratio = data["current"] / data["total"]
-            self.after(0, lambda: self.progress_bar.set(progress_ratio))
-            status_text = f"Processing {data['current']}/{data['total']}: {data['file']}"
-            if not data["success"]:
-                status_text += " [ERROR]"
-            self.after(0, lambda: self.status_label.configure(text=status_text))
-        elif data["type"] == "done":
-            self.after(0, lambda: self.status_label.configure(text=f"Finished! Successfully processed {data['total']} PDFs.", text_color="green"))
-            self.after(0, lambda: self.start_btn.configure(state="normal", text="Start Processing"))
-            self.after(0, lambda: self.preview_btn.configure(state="normal"))
-            self.after(0, lambda: messagebox.showinfo("Complete", f"Successfully processed {data['total']} files!"))
+            self.trigger_preview_update()
 
     def get_processor_instance(self):
         try:
-            wm_size = float(self.size_entry.get() or 50)
-            wm_angle = float(self.angle_entry.get() or 30)
+            wm_size_str = self.size_entry.get().strip()
+            wm_size = float(wm_size_str) if wm_size_str else 50
+            
+            wm_angle_str = self.angle_entry.get().strip()
+            wm_angle = float(wm_angle_str) if wm_angle_str else 30
         except ValueError:
-            messagebox.showerror("Input Error", "Size and Angle must be valid numbers.")
             return None
 
         return PDFProcessor(
@@ -215,13 +228,15 @@ class App(ctk.CTk):
             update_callback=self.handle_progress_update
         )
 
-    def preview_settings(self):
-        self.status_label.configure(text="Generating Preview...", text_color="yellow")
-        self.update() # Force UI refresh
+    def trigger_preview_update(self, event=None):
+        """Debounces and triggers an update of the preview frame."""
+        if self.preview_timer:
+            self.after_cancel(self.preview_timer)
+        self.preview_timer = self.after(300, self.update_preview_canvas)
 
+    def update_preview_canvas(self):
         processor = self.get_processor_instance()
         if not processor:
-             self.status_label.configure(text="Ready", text_color="gray")
              return
 
         # Find first PDF in input directory if available
@@ -239,27 +254,33 @@ class App(ctk.CTk):
         if img:
             # Resize image to fit screen reasonably
             w, h = img.size
-            max_height = 800
+            max_height = 700
+            
+            # constrain width to frame constraint dynamically or hard code limit
             if h > max_height:
                 ratio = max_height / h
                 img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
             
             w, h = img.size
             ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(w, h))
-            
-            tl = ctk.CTkToplevel(self)
-            tl.title("Watermark Preview")
-            tl.geometry(f"{w+40}x{h+40}")
-            tl.lift() # Bring to front
-            
-            lbl = ctk.CTkLabel(tl, text="", image=ctk_img)
-            lbl.pack(padx=20, pady=20)
-            
-            self.status_label.configure(text="Preview Ready!", text_color="green")
-            self.after(3000, lambda: self.status_label.configure(text="Ready", text_color="gray"))
+            self.preview_canvas.configure(image=ctk_img, text="")
         else:
-            messagebox.showerror("Error", "Could not generate preview.")
-            self.status_label.configure(text="Ready", text_color="gray")
+            self.preview_canvas.configure(image=None, text="Failed to render preview")
+
+    def handle_progress_update(self, data):
+        if data["type"] == "init":
+            self.after(0, lambda: self.status_label.configure(text=f"Found {data['total']} PDFs. Preparing..."))
+        elif data["type"] == "progress":
+            progress_ratio = data["current"] / data["total"]
+            self.after(0, lambda: self.progress_bar.set(progress_ratio))
+            status_text = f"Processing {data['current']}/{data['total']}: {data['file']}"
+            if not data["success"]:
+                status_text += " [ERROR]"
+            self.after(0, lambda: self.status_label.configure(text=status_text))
+        elif data["type"] == "done":
+            self.after(0, lambda: self.status_label.configure(text=f"Finished! Successfully processed {data['total']} PDFs.", text_color="green"))
+            self.after(0, lambda: self.start_btn.configure(state="normal", text="Start Processing"))
+            self.after(0, lambda: messagebox.showinfo("Complete", f"Successfully processed {data['total']} files!"))
 
     def run_processor(self, processor, in_dir, out_dir):
         processor.process_directory(in_dir, out_dir)
@@ -275,14 +296,12 @@ class App(ctk.CTk):
 
         # Disable button
         self.start_btn.configure(state="disabled", text="Processing...")
-        self.preview_btn.configure(state="disabled")
         self.progress_bar.set(0)
         self.status_label.configure(text="Initializing...", text_color="white")
 
         self.processor = self.get_processor_instance()
         if not self.processor:
             self.start_btn.configure(state="normal", text="Start Processing")
-            self.preview_btn.configure(state="normal")
             return
 
         self.processing_thread = threading.Thread(target=self.run_processor, args=(self.processor, self.input_dir, self.output_dir), daemon=True)
