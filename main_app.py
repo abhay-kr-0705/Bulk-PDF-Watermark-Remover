@@ -2,6 +2,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import threading
 import os
+from PIL import Image
 from pdf_processor import PDFProcessor
 
 ctk.set_appearance_mode("Dark")
@@ -120,17 +121,20 @@ class App(ctk.CTk):
         # --- Section 5: Execution ---
         exec_frame = ctk.CTkFrame(self)
         exec_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-        exec_frame.grid_columnconfigure(0, weight=1)
+        exec_frame.grid_columnconfigure((0, 1), weight=1)
+
+        self.preview_btn = ctk.CTkButton(exec_frame, text="Show Preview", command=self.preview_settings, font=ctk.CTkFont(size=14, weight="bold"), height=40, fg_color="#F2A900", hover_color="#C08400", text_color="black")
+        self.preview_btn.grid(row=0, column=0, padx=20, pady=(15, 5), sticky="ew")
 
         self.start_btn = ctk.CTkButton(exec_frame, text="Start Processing", command=self.start_processing, font=ctk.CTkFont(size=16, weight="bold"), height=50)
-        self.start_btn.grid(row=0, column=0, padx=20, pady=(15, 5), sticky="ew")
+        self.start_btn.grid(row=0, column=1, padx=20, pady=(15, 5), sticky="ew")
 
         self.progress_bar = ctk.CTkProgressBar(exec_frame)
-        self.progress_bar.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
+        self.progress_bar.grid(row=1, column=0, columnspan=2, padx=20, pady=5, sticky="ew")
         self.progress_bar.set(0)
 
         self.status_label = ctk.CTkLabel(exec_frame, text="Ready", text_color="gray")
-        self.status_label.grid(row=2, column=0, padx=20, pady=(0, 10))
+        self.status_label.grid(row=2, column=0, columnspan=2, padx=20, pady=(0, 10))
 
     def toggle_wm_type(self, value):
         if value == "Text":
@@ -185,7 +189,77 @@ class App(ctk.CTk):
         elif data["type"] == "done":
             self.after(0, lambda: self.status_label.configure(text=f"Finished! Successfully processed {data['total']} PDFs.", text_color="green"))
             self.after(0, lambda: self.start_btn.configure(state="normal", text="Start Processing"))
+            self.after(0, lambda: self.preview_btn.configure(state="normal"))
             self.after(0, lambda: messagebox.showinfo("Complete", f"Successfully processed {data['total']} files!"))
+
+    def get_processor_instance(self):
+        try:
+            wm_size = float(self.size_entry.get() or 50)
+            wm_angle = float(self.angle_entry.get() or 30)
+        except ValueError:
+            messagebox.showerror("Input Error", "Size and Angle must be valid numbers.")
+            return None
+
+        return PDFProcessor(
+            target_image_path=self.target_image_path or None,
+            watermark_type=self.wm_type_var.get(),
+            custom_watermark_text=self.wm_text_entry.get().strip() or None,
+            custom_watermark_image_path=self.custom_watermark_image_path or None,
+            watermark_opacity=self.opacity_slider.get(),
+            watermark_position=self.pos_var.get(),
+            watermark_size=wm_size,
+            watermark_angle=wm_angle,
+            custom_link_url=self.link_url_entry.get().strip() or None,
+            custom_link_text=self.link_text_entry.get().strip() or None,
+            custom_link_position=self.link_pos_var.get(),
+            update_callback=self.handle_progress_update
+        )
+
+    def preview_settings(self):
+        self.status_label.configure(text="Generating Preview...", text_color="yellow")
+        self.update() # Force UI refresh
+
+        processor = self.get_processor_instance()
+        if not processor:
+             self.status_label.configure(text="Ready", text_color="gray")
+             return
+
+        # Find first PDF in input directory if available
+        sample_pdf = None
+        if self.input_dir and os.path.exists(self.input_dir):
+            for root, _, files in os.walk(self.input_dir):
+                for file in files:
+                    if file.lower().endswith('.pdf'):
+                        sample_pdf = os.path.join(root, file)
+                        break
+                if sample_pdf:
+                    break
+
+        img = processor.generate_preview(sample_pdf)
+        if img:
+            # Resize image to fit screen reasonably
+            w, h = img.size
+            max_height = 800
+            if h > max_height:
+                ratio = max_height / h
+                img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+            
+            w, h = img.size
+            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(w, h))
+            
+            tl = ctk.CTkToplevel(self)
+            tl.title("Watermark Preview")
+            tl.geometry(f"{w+40}x{h+40}")
+            tl.lift() # Bring to front
+            
+            lbl = ctk.CTkLabel(tl, text="", image=ctk_img)
+            lbl.pack(padx=20, pady=20)
+            
+            self.status_label.configure(text="Preview Ready!", text_color="green")
+            self.after(3000, lambda: self.status_label.configure(text="Ready", text_color="gray"))
+        else:
+            messagebox.showerror("Error", "Could not generate preview.")
+            self.status_label.configure(text="Ready", text_color="gray")
 
     def run_processor(self, processor, in_dir, out_dir):
         processor.process_directory(in_dir, out_dir)
@@ -201,31 +275,15 @@ class App(ctk.CTk):
 
         # Disable button
         self.start_btn.configure(state="disabled", text="Processing...")
+        self.preview_btn.configure(state="disabled")
         self.progress_bar.set(0)
         self.status_label.configure(text="Initializing...", text_color="white")
 
-        try:
-            wm_size = float(self.size_entry.get() or 50)
-            wm_angle = float(self.angle_entry.get() or 30)
-        except ValueError:
-            messagebox.showerror("Input Error", "Size and Angle must be valid numbers.")
+        self.processor = self.get_processor_instance()
+        if not self.processor:
             self.start_btn.configure(state="normal", text="Start Processing")
+            self.preview_btn.configure(state="normal")
             return
-
-        self.processor = PDFProcessor(
-            target_image_path=self.target_image_path or None,
-            watermark_type=self.wm_type_var.get(),
-            custom_watermark_text=self.wm_text_entry.get().strip() or None,
-            custom_watermark_image_path=self.custom_watermark_image_path or None,
-            watermark_opacity=self.opacity_slider.get(),
-            watermark_position=self.pos_var.get(),
-            watermark_size=wm_size,
-            watermark_angle=wm_angle,
-            custom_link_url=self.link_url_entry.get().strip() or None,
-            custom_link_text=self.link_text_entry.get().strip() or None,
-            custom_link_position=self.link_pos_var.get(),
-            update_callback=self.handle_progress_update
-        )
 
         self.processing_thread = threading.Thread(target=self.run_processor, args=(self.processor, self.input_dir, self.output_dir), daemon=True)
         self.processing_thread.start()

@@ -236,5 +236,100 @@ class PDFProcessor:
             print(f"Failed to process {input_path}: {e}")
             return False
 
+    def generate_preview(self, input_path=None):
+        """Generates a preview PIL Image object of the first page with current watermark settings applied."""
+        import copy
+        from PIL import Image as PILImage
+        
+        try:
+            if input_path and os.path.exists(input_path):
+                doc = fitz.open(input_path)
+            else:
+                # Create a blank letter size dummy document
+                doc = fitz.open()
+                page = doc.new_page(width=612, height=792) # Standard Letter Size
+                page.insert_text(fitz.Point(200, 400), "DUMMY PREVIEW PAGE", fontsize=20, color=(0.7, 0.7, 0.7))
+                
+            page = doc[0] # Grab first page
+            
+            # Apply watermarks exactly like process_pdf (excluding the removal of existing images for preview speed)
+            rect = page.rect
+            width = rect.width
+            height = rect.height
+            
+            if self.watermark_type == "Text" and self.custom_watermark_text:
+                text_len = fitz.get_text_length(self.custom_watermark_text, fontname="helv", fontsize=self.watermark_size)
+                x, y = self.get_position_coords(width, height, text_len, self.watermark_size)
+                
+                p1 = fitz.Point(x, y + self.watermark_size)
+                
+                rad = np.radians(self.watermark_angle)
+                cos_a = np.cos(rad)
+                sin_a = np.sin(rad)
+                text_matrix = fitz.Matrix(cos_a, sin_a, -sin_a, cos_a, 0, 0)
+                
+                page.insert_text(p1, self.custom_watermark_text, fontsize=self.watermark_size, color=(0.5, 0.5, 0.5), fill_opacity=self.watermark_opacity, fontname="helv", morph=(p1, text_matrix))
+
+            elif self.watermark_type == "Image" and self.custom_watermark_image_path and os.path.exists(self.custom_watermark_image_path):
+                from PIL import Image
+                with Image.open(self.custom_watermark_image_path) as img:
+                    orig_w, orig_h = img.size
+                
+                scale = self.watermark_size / 100.0
+                img_w = orig_w * scale
+                img_h = orig_h * scale
+                
+                x, y = self.get_position_coords(width, height, img_w, img_h)
+                img_rect = fitz.Rect(x, y, x + img_w, y + img_h)
+                
+                with Image.open(self.custom_watermark_image_path).convert("RGBA") as base_image:
+                    alpha = base_image.split()[3]
+                    alpha = alpha.point(lambda p: p * self.watermark_opacity)
+                    base_image.putalpha(alpha)
+                    
+                    import io
+                    img_byte_arr = io.BytesIO()
+                    base_image.save(img_byte_arr, format='PNG')
+                    img_bytes = img_byte_arr.getvalue()
+                    
+                    page.insert_image(img_rect, stream=img_bytes, keep_proportion=True)
+
+            if self.custom_link_text: # No need for exact URL routing, just visual preview
+                text_len = fitz.get_text_length(self.custom_link_text, fontname="helv", fontsize=12)
+                padding = 20
+                if self.custom_link_position == "Bottom-Left":
+                    x = padding
+                    y = height - 15
+                elif self.custom_link_position == "Bottom-Right":
+                    x = width - text_len - padding
+                    y = height - 15
+                elif self.custom_link_position == "Top-Left":
+                    x = padding
+                    y = 15 + 12 
+                elif self.custom_link_position == "Top-Right":
+                    x = width - text_len - padding
+                    y = 15 + 12
+                elif self.custom_link_position == "Top-Center":
+                    x = (width - text_len) / 2
+                    y = 15 + 12
+                else: # Bottom-Center
+                    x = (width - text_len) / 2
+                    y = height - 15
+                    
+                page.insert_text(fitz.Point(x, y), self.custom_link_text, fontsize=12, color=(0, 0, 1), fontname="helv")
+
+            # Render to Image
+            # dpi 150 is good enough for a sharp desktop preview without taking too much memory
+            pix = page.get_pixmap(dpi=150) 
+            mode = "RGBA" if pix.alpha else "RGB"
+            img = PILImage.frombytes(mode, [pix.width, pix.height], pix.samples)
+            
+            doc.close()
+            return img
+
+        except Exception as e:
+            print(f"Error generating preview: {e}")
+            return None
+
     def cancel(self):
         self.cancel_requested = True
