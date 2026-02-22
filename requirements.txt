@@ -1,0 +1,6 @@
+PyMuPDF==1.24.4
+customtkinter==5.2.2
+Pillow==10.3.0
+opencv-python-headless==4.9.0.80
+numpy<2
+pyinstaller==6.9.0
