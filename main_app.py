@@ -43,13 +43,20 @@ class App(ctk.CTk):
         self.scroll_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
         self.scroll_frame.grid_columnconfigure(1, weight=1)
 
-        # --- Section 1: Directories ---
-        ctk.CTkLabel(self.scroll_frame, text="1. Select Directories", font=ctk.CTkFont(size=18, weight="bold")).grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w", columnspan=2)
+        # --- Section 1: Directories & Files ---
+        ctk.CTkLabel(self.scroll_frame, text="1. Select Input/Output", font=ctk.CTkFont(size=18, weight="bold")).grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w", columnspan=2)
 
-        self.input_btn = ctk.CTkButton(self.scroll_frame, text="Browse Input Folder", command=self.select_input_dir)
-        self.input_btn.grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        self.input_label = ctk.CTkLabel(self.scroll_frame, text="No folder selected", text_color="gray")
-        self.input_label.grid(row=1, column=1, padx=10, pady=5, sticky="w")
+        input_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        input_frame.grid(row=1, column=0, padx=10, pady=5, sticky="w", columnspan=2)
+        
+        self.input_dir_btn = ctk.CTkButton(input_frame, text="Browse Input Folder", command=self.select_input_dir)
+        self.input_dir_btn.grid(row=0, column=0, padx=(0, 5))
+        
+        self.input_file_btn = ctk.CTkButton(input_frame, text="Browse Input File", command=self.select_input_file)
+        self.input_file_btn.grid(row=0, column=1, padx=5)
+
+        self.input_label = ctk.CTkLabel(input_frame, text="No input selected", text_color="gray")
+        self.input_label.grid(row=0, column=2, padx=10)
 
         self.output_btn = ctk.CTkButton(self.scroll_frame, text="Browse Output Folder", command=self.select_output_dir)
         self.output_btn.grid(row=2, column=0, padx=10, pady=5, sticky="w")
@@ -110,7 +117,7 @@ class App(ctk.CTk):
         # Position
         ctk.CTkLabel(self.scroll_frame, text="Position:").grid(row=12, column=0, padx=10, pady=5, sticky="e")
         self.pos_var = ctk.StringVar(value="Center")
-        self.pos_menu = ctk.CTkOptionMenu(self.scroll_frame, values=["Center", "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"], variable=self.pos_var, command=self.trigger_preview_update)
+        self.pos_menu = ctk.CTkOptionMenu(self.scroll_frame, values=["Center", "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right", "Tiled (Everywhere)"], variable=self.pos_var, command=self.trigger_preview_update)
         self.pos_menu.grid(row=12, column=1, padx=10, pady=5, sticky="w")
 
         # --- Section 4: Add Custom Footer Link ---
@@ -181,6 +188,13 @@ class App(ctk.CTk):
         if folder:
             self.input_dir = folder
             self.input_label.configure(text=folder, text_color="white")
+            self.trigger_preview_update()
+
+    def select_input_file(self):
+        file = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
+        if file:
+            self.input_dir = file
+            self.input_label.configure(text=os.path.basename(file), text_color="white")
             self.trigger_preview_update()
 
     def select_output_dir(self):
@@ -287,11 +301,11 @@ class App(ctk.CTk):
 
     def start_processing(self):
         if not self.input_dir or not self.output_dir:
-            messagebox.showwarning("Missing Folders", "Please select both Input and Output directories.")
+            messagebox.showwarning("Missing Input/Output", "Please select both an Input source and an Output directory.")
             return
 
         if self.input_dir == self.output_dir:
-            messagebox.showerror("Error", "Input and Output directories cannot be the same!")
+            messagebox.showerror("Error", "Input and Output cannot be exactly the same directory!")
             return
 
         # Disable button

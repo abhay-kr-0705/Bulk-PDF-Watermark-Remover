@@ -50,28 +50,42 @@ class PDFProcessor:
             except Exception as e:
                 print(f"Error loading target watermark image: {e}")
 
-    def process_directory(self, input_dir, output_dir):
-        total_pdfs = 0
-        pdf_files = []
+    def process_directory(self, input_path, output_dir):
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
 
-        for root, _, files in os.walk(input_dir):
-            for file in files:
-                if file.lower().endswith('.pdf'):
-                    total_pdfs += 1
-                    pdf_files.append(os.path.join(root, file))
+        pdf_files = []
+        is_single_file = os.path.isfile(input_path)
+        
+        if is_single_file:
+            if input_path.lower().endswith('.pdf'):
+                pdf_files.append(input_path)
+            total_pdfs = len(pdf_files)
+        else:
+            total_pdfs = 0
+            for root, _, files in os.walk(input_path):
+                for file in files:
+                    if file.lower().endswith('.pdf'):
+                        total_pdfs += 1
+                        pdf_files.append(os.path.join(root, file))
 
         if self.update_callback:
             self.update_callback({"type": "init", "total": total_pdfs})
 
         processed_count = 0
         for pdf_path in pdf_files:
-            if self.cancel_requested:
+            if getattr(self, "cancel_requested", False):
                 break
 
-            rel_path = os.path.relpath(pdf_path, input_dir)
-            output_pdf_path = os.path.join(output_dir, rel_path)
-            
-            os.makedirs(os.path.dirname(output_pdf_path), exist_ok=True)
+            if is_single_file:
+                # Place directly in output dir for single files
+                rel_path = os.path.basename(pdf_path)
+                output_pdf_path = os.path.join(output_dir, rel_path)
+            else:
+                rel_path = os.path.relpath(pdf_path, input_path)
+                output_pdf_path = os.path.join(output_dir, rel_path)
+                os.makedirs(os.path.dirname(output_pdf_path), exist_ok=True)
+                
             success = self.process_pdf(pdf_path, output_pdf_path)
             
             processed_count += 1
@@ -141,8 +155,62 @@ class PDFProcessor:
             return padding + bbox_w/2, page_height - padding - bbox_h/2
         elif self.watermark_position == "Bottom-Right":
             return page_width - padding - bbox_w/2, page_height - padding - bbox_h/2
-        else: # Center
+        elif self.watermark_position == "Center": 
             return page_width / 2, page_height / 2
+        else: # Tiled
+            return page_width / 2, page_height / 2
+
+    def insert_tiled_text(self, page, text, size, color, opacity, angle, page_width, page_height):
+        # Determine strict grid spacing
+        rad = np.radians(angle)
+        cos_rad = np.cos(rad)
+        sin_rad = np.sin(rad)
+        text_matrix = fitz.Matrix(cos_rad, sin_rad, -sin_rad, cos_rad, 0, 0)
+        
+        text_len = fitz.get_text_length(text, fontname="helv", fontsize=size)
+        text_height = size
+        
+        # Grid steps based on text size + generous padding
+        step_x = text_len * 1.5 + 50
+        step_y = text_height * 3.0 + 50
+        
+        # Start from outside the page bounds to ensure full coverage during rotation
+        start_x = -page_width
+        end_x = page_width * 2
+        start_y = -page_height
+        end_y = page_height * 2
+        
+        y = start_y
+        row = 0
+        while y < end_y:
+            x = start_x
+            if row % 2 != 0:
+                # Stagger the grid like bricks for better tiling appearance
+                x += step_x / 2.0
+            while x < end_x:
+                p_unrotated = fitz.Point(x - text_len / 2, y + text_height * 0.3)
+                center_pt = fitz.Point(x, y)
+                page.insert_text(p_unrotated, text, fontsize=size, color=color, fill_opacity=opacity, fontname="helv", morph=(center_pt, text_matrix))
+                x += step_x
+            y += step_y
+            row += 1
+
+    def insert_tiled_image(self, page, img_bytes, img_w, img_h, page_width, page_height):
+        step_x = img_w * 1.5 + 20
+        step_y = img_h * 1.5 + 20
+        
+        y = 0
+        row = 0
+        while y < page_height:
+            x = 0
+            if row % 2 != 0:
+                x += step_x / 2.0
+            while x < page_width:
+                img_rect = fitz.Rect(x, y, x + img_w, y + img_h)
+                page.insert_image(img_rect, stream=img_bytes, keep_proportion=True)
+                x += step_x
+            y += step_y
+            row += 1
 
     def process_pdf(self, input_path, output_path):
         try:
@@ -174,20 +242,23 @@ class PDFProcessor:
                 height = rect.height
                 
                 if self.watermark_type == "Text" and self.custom_watermark_text:
-                    text_len = fitz.get_text_length(self.custom_watermark_text, fontname="helv", fontsize=self.watermark_size)
-                    text_height = self.watermark_size
-                    
-                    target_cx, target_cy = self.get_text_target_center(width, height, text_len, text_height, self.watermark_angle)
-                    
-                    p_unrotated = fitz.Point(target_cx - text_len / 2, target_cy + text_height * 0.3)
-                    center_pt = fitz.Point(target_cx, target_cy)
-                    
-                    rad = np.radians(self.watermark_angle)
-                    cos_rad = np.cos(rad)
-                    sin_rad = np.sin(rad)
-                    text_matrix = fitz.Matrix(cos_rad, sin_rad, -sin_rad, cos_rad, 0, 0)
-                    
-                    page.insert_text(p_unrotated, self.custom_watermark_text, fontsize=self.watermark_size, color=(0.5, 0.5, 0.5), fill_opacity=self.watermark_opacity, fontname="helv", morph=(center_pt, text_matrix))
+                    if self.watermark_position == "Tiled (Everywhere)":
+                        self.insert_tiled_text(page, self.custom_watermark_text, self.watermark_size, (0.5, 0.5, 0.5), self.watermark_opacity, self.watermark_angle, width, height)
+                    else:
+                        text_len = fitz.get_text_length(self.custom_watermark_text, fontname="helv", fontsize=self.watermark_size)
+                        text_height = self.watermark_size
+                        
+                        target_cx, target_cy = self.get_text_target_center(width, height, text_len, text_height, self.watermark_angle)
+                        
+                        p_unrotated = fitz.Point(target_cx - text_len / 2, target_cy + text_height * 0.3)
+                        center_pt = fitz.Point(target_cx, target_cy)
+                        
+                        rad = np.radians(self.watermark_angle)
+                        cos_rad = np.cos(rad)
+                        sin_rad = np.sin(rad)
+                        text_matrix = fitz.Matrix(cos_rad, sin_rad, -sin_rad, cos_rad, 0, 0)
+                        
+                        page.insert_text(p_unrotated, self.custom_watermark_text, fontsize=self.watermark_size, color=(0.5, 0.5, 0.5), fill_opacity=self.watermark_opacity, fontname="helv", morph=(center_pt, text_matrix))
 
                 elif self.watermark_type == "Image" and self.custom_watermark_image_path and os.path.exists(self.custom_watermark_image_path):
                     try:
@@ -217,7 +288,10 @@ class PDFProcessor:
                             base_image.save(img_byte_arr, format='PNG')
                             img_bytes = img_byte_arr.getvalue()
                             
-                            page.insert_image(img_rect, stream=img_bytes, keep_proportion=True)
+                            if self.watermark_position == "Tiled (Everywhere)":
+                                self.insert_tiled_image(page, img_bytes, img_w, img_h, width, height)
+                            else:
+                                page.insert_image(img_rect, stream=img_bytes, keep_proportion=True)
                     except Exception as e:
                         print(f"Error inserting image watermark: {e}")
 
@@ -280,20 +354,23 @@ class PDFProcessor:
             height = rect.height
             
             if self.watermark_type == "Text" and self.custom_watermark_text:
-                text_len = fitz.get_text_length(self.custom_watermark_text, fontname="helv", fontsize=self.watermark_size)
-                text_height = self.watermark_size
-                
-                target_cx, target_cy = self.get_text_target_center(width, height, text_len, text_height, self.watermark_angle)
-                
-                p_unrotated = fitz.Point(target_cx - text_len / 2, target_cy + text_height * 0.3)
-                center_pt = fitz.Point(target_cx, target_cy)
-                
-                rad = np.radians(self.watermark_angle)
-                cos_rad = np.cos(rad)
-                sin_rad = np.sin(rad)
-                text_matrix = fitz.Matrix(cos_rad, sin_rad, -sin_rad, cos_rad, 0, 0)
-                
-                page.insert_text(p_unrotated, self.custom_watermark_text, fontsize=self.watermark_size, color=(0.5, 0.5, 0.5), fill_opacity=self.watermark_opacity, fontname="helv", morph=(center_pt, text_matrix))
+                if self.watermark_position == "Tiled (Everywhere)":
+                    self.insert_tiled_text(page, self.custom_watermark_text, self.watermark_size, (0.5, 0.5, 0.5), self.watermark_opacity, self.watermark_angle, width, height)
+                else:
+                    text_len = fitz.get_text_length(self.custom_watermark_text, fontname="helv", fontsize=self.watermark_size)
+                    text_height = self.watermark_size
+                    
+                    target_cx, target_cy = self.get_text_target_center(width, height, text_len, text_height, self.watermark_angle)
+                    
+                    p_unrotated = fitz.Point(target_cx - text_len / 2, target_cy + text_height * 0.3)
+                    center_pt = fitz.Point(target_cx, target_cy)
+                    
+                    rad = np.radians(self.watermark_angle)
+                    cos_rad = np.cos(rad)
+                    sin_rad = np.sin(rad)
+                    text_matrix = fitz.Matrix(cos_rad, sin_rad, -sin_rad, cos_rad, 0, 0)
+                    
+                    page.insert_text(p_unrotated, self.custom_watermark_text, fontsize=self.watermark_size, color=(0.5, 0.5, 0.5), fill_opacity=self.watermark_opacity, fontname="helv", morph=(center_pt, text_matrix))
 
             elif self.watermark_type == "Image" and self.custom_watermark_image_path and os.path.exists(self.custom_watermark_image_path):
                 from PIL import Image
