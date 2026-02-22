@@ -1,8 +1,9 @@
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import filedialog, messagebox
 import threading
 import os
-from PIL import Image
+from PIL import Image, ImageTk
 from pdf_processor import PDFProcessor
 
 ctk.set_appearance_mode("Dark")
@@ -30,6 +31,13 @@ class App(ctk.CTk):
         
         # Preview debounce timer
         self.preview_timer = None
+        
+        # Canvas Interaction State
+        self.zoom_factor = 1.0
+        self.preview_base_img = None 
+        self.canvas_img_id = None
+        self.pan_start_x = 0
+        self.pan_start_y = 0
 
         self.create_widgets()
         # Initialize an empty preview
@@ -160,10 +168,16 @@ class App(ctk.CTk):
         self.preview_frame.grid_rowconfigure(1, weight=1)
         self.preview_frame.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(self.preview_frame, text="Live Preview", font=ctk.CTkFont(size=18, weight="bold")).grid(row=0, column=0, pady=10)
+        ctk.CTkLabel(self.preview_frame, text="Live Preview (Scroll to Zoom, Click & Drag to Pan)", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, pady=10)
         
-        self.preview_canvas = ctk.CTkLabel(self.preview_frame, text="Wait for preview...", text_color="gray")
+        # Replace CTkLabel with an interactive tk.Canvas
+        self.preview_canvas = tk.Canvas(self.preview_frame, bg="#2b2b2b", highlightthickness=0)
         self.preview_canvas.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        
+        # Bind Mouse Events for Zoom and Pan
+        self.preview_canvas.bind("<MouseWheel>", self.on_mousewheel)
+        self.preview_canvas.bind("<ButtonPress-1>", self.on_pan_start)
+        self.preview_canvas.bind("<B1-Motion>", self.on_pan_move)
 
 
     def handle_type_change(self, value):
@@ -244,42 +258,100 @@ class App(ctk.CTk):
 
     def trigger_preview_update(self, event=None):
         """Debounces and triggers an update of the preview frame."""
+        # Reset zoom when parameters change
+        if event is None or event.type != getattr(tk.EventType, 'MouseWheel', None):
+            self.zoom_factor = 1.0
+            
         if self.preview_timer:
             self.after_cancel(self.preview_timer)
         self.preview_timer = self.after(300, self.update_preview_canvas)
+
+    def on_mousewheel(self, event):
+        # Respond to scroll wheel
+        if event.delta > 0:
+            self.zoom_factor = min(self.zoom_factor * 1.1, 5.0) # Max 5x zoom
+        elif event.delta < 0:
+            self.zoom_factor = max(self.zoom_factor * 0.9, 0.2) # Min 0.2x zoom
+        self.render_canvas_image()
+
+    def on_pan_start(self, event):
+        self.preview_canvas.scan_mark(event.x, event.y)
+
+    def on_pan_move(self, event):
+        self.preview_canvas.scan_dragto(event.x, event.y, gain=1)
 
     def update_preview_canvas(self):
         processor = self.get_processor_instance()
         if not processor:
              return
 
-        # Find first PDF in input directory if available
         sample_pdf = None
-        if self.input_dir and os.path.exists(self.input_dir):
-            for root, _, files in os.walk(self.input_dir):
-                for file in files:
-                    if file.lower().endswith('.pdf'):
-                        sample_pdf = os.path.join(root, file)
+        if self.input_dir:
+            if os.path.isfile(self.input_dir) and self.input_dir.lower().endswith('.pdf'):
+                sample_pdf = self.input_dir
+            elif os.path.isdir(self.input_dir):
+                for root, _, files in os.walk(self.input_dir):
+                    # Sort files so we consistently grab the exact same representative file
+                    for file in sorted(files):
+                        if file.lower().endswith('.pdf'):
+                            sample_pdf = os.path.join(root, file)
+                            break
+                    if sample_pdf:
                         break
-                if sample_pdf:
-                    break
 
+        # Generate base PIL Image at 150 DPI natively from PyMuPDF
         img = processor.generate_preview(sample_pdf)
         if img:
-            # Resize image to fit screen reasonably
-            w, h = img.size
-            max_height = 700
-            
-            # constrain width to frame constraint dynamically or hard code limit
-            if h > max_height:
-                ratio = max_height / h
-                img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
-            
-            w, h = img.size
-            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(w, h))
-            self.preview_canvas.configure(image=ctk_img, text="")
+            self.preview_base_img = img
+            self.render_canvas_image()
         else:
-            self.preview_canvas.configure(image=None, text="Failed to render preview")
+            self.preview_canvas.delete("all")
+            self.preview_canvas.create_text(self.preview_canvas.winfo_width()/2, self.preview_canvas.winfo_height()/2, text="Failed to render preview", fill="gray")
+
+    def render_canvas_image(self):
+        if not self.preview_base_img:
+            return
+            
+        canvas_w = self.preview_canvas.winfo_width()
+        canvas_h = self.preview_canvas.winfo_height()
+        
+        # If canvas isn't fully drawn yet, fallback to an arbitrary bounds
+        if canvas_w <= 1 or canvas_h <= 1:
+            canvas_w, canvas_h = 600, 700
+            
+        img_w, img_h = self.preview_base_img.size
+        
+        # Calculate fit-to-screen scaling *before* zoom factor applies
+        scale_w = canvas_w / img_w
+        scale_h = canvas_h / img_h
+        base_scale = min(scale_w, scale_h) * 0.95 # 0.95 gives a nice tiny 5% padding around the page
+        
+        final_scale = base_scale * self.zoom_factor
+        new_w = int(img_w * final_scale)
+        new_h = int(img_h * final_scale)
+        
+        if new_w <= 0 or new_h <= 0:
+             return
+             
+        resized_img = self.preview_base_img.resize((new_w, new_h), Image.LANCZOS)
+        
+        # We must keep a persistent reference to the PhotoImage or garbage collection destroys it
+        self.tk_preview_img = ImageTk.PhotoImage(resized_img)
+        
+        # Clear and redraw.
+        self.preview_canvas.delete("all")
+        
+        # Determine center anchor point
+        cx = canvas_w / 2
+        cy = canvas_h / 2
+        
+        self.canvas_img_id = self.preview_canvas.create_image(cx, cy, anchor="center", image=self.tk_preview_img)
+        
+        # Add a subtle border rectangle around the page so we can see edges natively
+        self.preview_canvas.create_rectangle(cx - new_w/2, cy - new_h/2, cx + new_w/2, cy + new_h/2, outline="#555555", width=2)
+        
+        # Update scrollregion bounds so panning works properly
+        self.preview_canvas.configure(scrollregion=self.preview_canvas.bbox("all"))
 
     def handle_progress_update(self, data):
         if data["type"] == "init":
