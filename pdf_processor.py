@@ -161,7 +161,6 @@ class PDFProcessor:
             return page_width / 2, page_height / 2
 
     def insert_tiled_text(self, page, text, size, color, opacity, angle, page_width, page_height):
-        # Determine strict grid spacing
         rad = np.radians(angle)
         cos_rad = np.cos(rad)
         sin_rad = np.sin(rad)
@@ -170,27 +169,39 @@ class PDFProcessor:
         text_len = fitz.get_text_length(text, fontname="helv", fontsize=size)
         text_height = size
         
-        # Grid steps based on text size + generous padding
-        step_x = text_len * 1.5 + 50
-        step_y = text_height * 3.0 + 50
+        # Grid steps in unrotated space
+        # We pack vertically very tightly (just the font height + a little spacing)
+        # We space out horizontally by the length of the text + generous padding
+        step_x = text_len + max(60, size * 2.5) 
+        step_y = text_height * 3.5
         
-        # Start from outside the page bounds to ensure full coverage during rotation
-        start_x = -page_width
-        end_x = page_width * 2
-        start_y = -page_height
-        end_y = page_height * 2
+        cx, cy = page_width / 2, page_height / 2
+        
+        # Cover a sufficiently large area to span the rotated page
+        diag = np.sqrt(page_width**2 + page_height**2)
+        start_y = -diag
+        end_y = diag
+        start_x = -diag
+        end_x = diag
         
         y = start_y
         row = 0
         while y < end_y:
             x = start_x
             if row % 2 != 0:
-                # Stagger the grid like bricks for better tiling appearance
-                x += step_x / 2.0
+                x += step_x / 2.0  # Stagger rows like bricks
+                
             while x < end_x:
-                p_unrotated = fitz.Point(x - text_len / 2, y + text_height * 0.3)
-                center_pt = fitz.Point(x, y)
-                page.insert_text(p_unrotated, text, fontsize=size, color=color, fill_opacity=opacity, fontname="helv", morph=(center_pt, text_matrix))
+                # Rotate the grid coordinates (x, y) around the true center of the page
+                xr = cx + x * cos_rad - y * sin_rad
+                yr = cy + x * sin_rad + y * cos_rad
+                
+                # Only insert text if the rotated coordinates fall roughly on the page bounds
+                if -150 <= xr <= page_width + 150 and -150 <= yr <= page_height + 150:
+                    p_unrotated = fitz.Point(xr - text_len / 2, yr + text_height * 0.3)
+                    center_pt = fitz.Point(xr, yr)
+                    page.insert_text(p_unrotated, text, fontsize=size, color=color, fill_opacity=opacity, fontname="helv", morph=(center_pt, text_matrix))
+                
                 x += step_x
             y += step_y
             row += 1
