@@ -14,6 +14,7 @@ class PDFProcessor:
                  watermark_angle=30,
                  custom_link_url=None, 
                  custom_link_text=None, 
+                 custom_link_position="Bottom-Center",
                  update_callback=None):
         
         self.target_image_path = target_image_path
@@ -31,6 +32,7 @@ class PDFProcessor:
             self.custom_link_url = "https://" + self.custom_link_url
             
         self.custom_link_text = custom_link_text
+        self.custom_link_position = custom_link_position
         self.update_callback = update_callback
         self.cancel_requested = False
 
@@ -200,11 +202,30 @@ class PDFProcessor:
                 # 3. Add Custom Footer Link
                 if self.custom_link_text and self.custom_link_url:
                     text_len = fitz.get_text_length(self.custom_link_text, fontname="helv", fontsize=12)
-                    x = (width - text_len) / 2
-                    y = height - 15
+                    padding = 20
                     
+                    if self.custom_link_position == "Bottom-Left":
+                        x = padding
+                        y = height - 15
+                    elif self.custom_link_position == "Bottom-Right":
+                        x = width - text_len - padding
+                        y = height - 15
+                    elif self.custom_link_position == "Top-Left":
+                        x = padding
+                        # text is drawn from bottom-left of bounds, 15 from edge
+                        y = 15 + 12 
+                    elif self.custom_link_position == "Top-Right":
+                        x = width - text_len - padding
+                        y = 15 + 12
+                    elif self.custom_link_position == "Top-Center":
+                        x = (width - text_len) / 2
+                        y = 15 + 12
+                    else: # Bottom-Center
+                        x = (width - text_len) / 2
+                        y = height - 15
+                        
                     page.insert_text(fitz.Point(x, y), self.custom_link_text, fontsize=12, color=(0, 0, 1), fontname="helv")
-                    link_dict = {"kind": fitz.LINK_URI, "from": fitz.Rect(x, height-25, x + text_len, height-5), "uri": self.custom_link_url}
+                    link_dict = {"kind": fitz.LINK_URI, "from": fitz.Rect(x, y - 10, x + text_len, y + 5), "uri": self.custom_link_url}
                     page.insert_link(link_dict)
 
             doc.save(output_path, garbage=4, deflate=True)

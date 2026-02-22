@@ -112,6 +112,11 @@ class App(ctk.CTk):
         self.link_text_entry = ctk.CTkEntry(self.scroll_frame, placeholder_text="e.g., Visit Our Website")
         self.link_text_entry.grid(row=15, column=1, padx=10, pady=5, sticky="ew")
 
+        ctk.CTkLabel(self.scroll_frame, text="Link Position:").grid(row=16, column=0, padx=10, pady=5, sticky="e")
+        self.link_pos_var = ctk.StringVar(value="Bottom-Center")
+        self.link_pos_menu = ctk.CTkOptionMenu(self.scroll_frame, values=["Bottom-Center", "Bottom-Left", "Bottom-Right", "Top-Center", "Top-Left", "Top-Right"], variable=self.link_pos_var)
+        self.link_pos_menu.grid(row=16, column=1, padx=10, pady=5, sticky="w")
+
         # --- Section 5: Execution ---
         exec_frame = ctk.CTkFrame(self)
         exec_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
@@ -218,6 +223,7 @@ class App(ctk.CTk):
             watermark_angle=wm_angle,
             custom_link_url=self.link_url_entry.get().strip() or None,
             custom_link_text=self.link_text_entry.get().strip() or None,
+            custom_link_position=self.link_pos_var.get(),
             update_callback=self.handle_progress_update
         )
 
