@@ -111,18 +111,28 @@ class PDFProcessor:
             pass
         return False
 
-    def get_position_coords(self, page_width, page_height, item_width, item_height):
+    def get_position_coords(self, page_width, page_height, item_width, item_height, angle_degrees=0):
+        # Calculate the actual bounding box dimensions of the rotated item
+        rad = np.radians(angle_degrees)
+        sin_a = abs(np.sin(rad))
+        cos_a = abs(np.cos(rad))
+        
+        # Rotated bounding box
+        bbox_width = item_width * cos_a + item_height * sin_a
+        bbox_height = item_width * sin_a + item_height * cos_a
+        
         padding = 40
         if self.watermark_position == "Top-Left":
-            return padding, padding
+            return padding, padding + bbox_height
         elif self.watermark_position == "Top-Right":
-            return page_width - item_width - padding, padding
+            return page_width - bbox_width - padding, padding + bbox_height
         elif self.watermark_position == "Bottom-Left":
-            return padding, page_height - item_height - padding
+            return padding, page_height - padding
         elif self.watermark_position == "Bottom-Right":
-            return page_width - item_width - padding, page_height - item_height - padding
+            return page_width - bbox_width - padding, page_height - padding
         else: # Center
-            return (page_width - item_width) / 2, (page_height - item_height) / 2
+            # Center of the page minus half the bounding box
+            return (page_width - bbox_width) / 2, (page_height - bbox_height) / 2 + bbox_height
 
     def process_pdf(self, input_path, output_path):
         try:
@@ -155,17 +165,33 @@ class PDFProcessor:
                 
                 if self.watermark_type == "Text" and self.custom_watermark_text:
                     text_len = fitz.get_text_length(self.custom_watermark_text, fontname="helv", fontsize=self.watermark_size)
-                    x, y = self.get_position_coords(width, height, text_len, self.watermark_size)
                     
-                    p1 = fitz.Point(x, y + self.watermark_size) # text is drawn from bottom-left of bounds
+                    x, y = self.get_position_coords(width, height, text_len, self.watermark_size, self.watermark_angle)
                     
+                    # p1 is the bottom-left of the bounding box
+                    p1 = fitz.Point(x, y) 
+                    
+                    # Calculate how much to shift the anchor point due to rotation to keep it inside the bbox
                     rad = np.radians(self.watermark_angle)
-                    cos_a = np.cos(rad)
-                    sin_a = np.sin(rad)
-                    # rotation matrix around p1
-                    text_matrix = fitz.Matrix(cos_a, sin_a, -sin_a, cos_a, 0, 0)
+                    sin_a = np.abs(np.sin(rad))
+                    cos_a = np.abs(np.cos(rad))
                     
-                    page.insert_text(p1, self.custom_watermark_text, fontsize=self.watermark_size, color=(0.5, 0.5, 0.5), fill_opacity=self.watermark_opacity, fontname="helv", morph=(p1, text_matrix))
+                    if self.watermark_angle > 0:
+                        # Rotating counter-clockwise
+                        anchor_x = x
+                        anchor_y = y - (text_len * sin_a)
+                    else:
+                        # Rotating clockwise
+                        anchor_x = x + (self.watermark_size * sin_a)
+                        anchor_y = y
+                        
+                    p_anchor = fitz.Point(anchor_x, anchor_y)
+
+                    cos_rad = np.cos(rad)
+                    sin_rad = np.sin(rad)
+                    text_matrix = fitz.Matrix(cos_rad, sin_rad, -sin_rad, cos_rad, 0, 0)
+                    
+                    page.insert_text(p_anchor, self.custom_watermark_text, fontsize=self.watermark_size, color=(0.5, 0.5, 0.5), fill_opacity=self.watermark_opacity, fontname="helv", morph=(p_anchor, text_matrix))
 
                 elif self.watermark_type == "Image" and self.custom_watermark_image_path and os.path.exists(self.custom_watermark_image_path):
                     try:
@@ -259,16 +285,30 @@ class PDFProcessor:
             
             if self.watermark_type == "Text" and self.custom_watermark_text:
                 text_len = fitz.get_text_length(self.custom_watermark_text, fontname="helv", fontsize=self.watermark_size)
-                x, y = self.get_position_coords(width, height, text_len, self.watermark_size)
                 
-                p1 = fitz.Point(x, y + self.watermark_size)
+                x, y = self.get_position_coords(width, height, text_len, self.watermark_size, self.watermark_angle)
                 
+                # Calculate how much to shift the anchor point due to rotation to keep it inside the bbox
                 rad = np.radians(self.watermark_angle)
-                cos_a = np.cos(rad)
-                sin_a = np.sin(rad)
-                text_matrix = fitz.Matrix(cos_a, sin_a, -sin_a, cos_a, 0, 0)
+                sin_a = np.abs(np.sin(rad))
+                cos_a = np.abs(np.cos(rad))
                 
-                page.insert_text(p1, self.custom_watermark_text, fontsize=self.watermark_size, color=(0.5, 0.5, 0.5), fill_opacity=self.watermark_opacity, fontname="helv", morph=(p1, text_matrix))
+                if self.watermark_angle > 0:
+                    # Rotating counter-clockwise
+                    anchor_x = x
+                    anchor_y = y - (text_len * sin_a)
+                else:
+                    # Rotating clockwise
+                    anchor_x = x + (self.watermark_size * sin_a)
+                    anchor_y = y
+                    
+                p_anchor = fitz.Point(anchor_x, anchor_y)
+
+                cos_rad = np.cos(rad)
+                sin_rad = np.sin(rad)
+                text_matrix = fitz.Matrix(cos_rad, sin_rad, -sin_rad, cos_rad, 0, 0)
+                
+                page.insert_text(p_anchor, self.custom_watermark_text, fontsize=self.watermark_size, color=(0.5, 0.5, 0.5), fill_opacity=self.watermark_opacity, fontname="helv", morph=(p_anchor, text_matrix))
 
             elif self.watermark_type == "Image" and self.custom_watermark_image_path and os.path.exists(self.custom_watermark_image_path):
                 from PIL import Image
