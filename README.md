@@ -46,4 +46,4 @@ If you want to package your own `.exe` file after modifying the code, run:
 ```bash
 pyinstaller --noconsole --onefile --name "Bulk_PDF_Watermark" main_app.py
 ```
-This will compile everything and generate an `.exe` inside the `dist` folder.
+This will compile everything and generate an `.exe` inside the `dist` folder. 
